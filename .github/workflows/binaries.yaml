@@ -2,9 +2,9 @@ name: Build and Deploy
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - ci
+#  push:
+#    branches:
+ #     - ci
   schedule:
     - cron: "0 0 15 * *"
 

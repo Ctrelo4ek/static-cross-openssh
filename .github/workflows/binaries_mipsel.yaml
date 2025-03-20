@@ -1,0 +1,121 @@
+name: Build static lates OpenSSH
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 15 * *"  # Запуск 15-го числа каждого месяца.
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        arch: [aarch64, mipsel]  # Объединяем архитектуры в один список.
+      fail-fast: false # продолжаем сборку даже если одна из матриц упала
+
+    env:
+      CC: ${{ matrix.arch }}-linux-gnu-gcc
+      CXX: ${{ matrix.arch }}-linux-gnu-g++
+      AR: ${{ matrix.arch }}-linux-gnu-ar
+      RANLIB: ${{ matrix.arch }}-linux-gnu-ranlib
+      STRIP: ${{ matrix.arch }}-linux-gnu-strip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up cross-compilation toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-${{ matrix.arch }}-linux-gnu \
+            g++-${{ matrix.arch }}-linux-gnu \
+            make autoconf automake libtool pkg-config zlib1g-dev curl wget jq
+
+      - name: Get number of CPU cores
+        uses: SimenB/github-actions-cpu-cores@v2
+        id: cpu-cores
+
+      - name: Get latest version
+        id: versions
+        run: |
+          # Более надежный парсинг JSON с jq.
+          #ZLIB_VERSION=$(curl -s https://api.github.com/repos/madler/zlib/releases/latest | jq -r '.assets[] | select(.name | test("zlib-.*\\.tar\\.gz")) | .name' | sed 's|\.tar\.gz||' | sort -V | tail -n 1)
+          #ZLIB_VERSION=$(curl -s https://api.github.com/repos/madler/zlib/releases/latest | jq -r '.assets[] | select(.name | test("zlib-.*\\.tar\\.gz")) | .name' | sed 's|\.tar\.gz||' | sort -V | tail -n 1 | grep -o 'zlib-.*')
+          ZLIB_VERSION=$(curl -s https://api.github.com/repos/madler/zlib/releases/latest | grep -o 'zlib-[^"]*\.tar\.gz' | sed 's|\.tar\.gz||' | sort -V | tail -n 1)
+          OPENSSL_VERSION=$(curl -s https://api.github.com/repos/openssl/openssl/releases/latest | jq -r '.tarball_url' | sed 's|.*/||; s|\.tar\.gz||' | sort -V | tail -n 1)
+          OPENSSH_VERSION=$(curl -s https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/ | grep -o 'openssh-[^"]*\.tar\.gz' | sed 's|\.tar\.gz||' | sort -V | tail -n 1)
+          echo $ZLIB_VERSION
+          echo $OPENSSL_VERSION
+          echo $OPENSSH_VERSION
+          echo "ZLIB_VERSION=$ZLIB_VERSION" >> "$GITHUB_OUTPUT"
+          echo "OPENSSL_VERSION=$OPENSSL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "OPENSSH_VERSION=$OPENSSH_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Determine prefix and host
+        id: vars
+        run: |
+          # Устанавливаем prefix и host в зависимости от архитектуры.
+          if [[ "${{ matrix.arch }}" == "mipsel" ]]; then
+            PREFIX="/opt/"
+            HOST="mipsel-linux-gnu"
+          else
+            PREFIX="/"
+            HOST="${{ matrix.arch }}-linux-gnu"
+          fi
+          echo "PREFIX=$PREFIX" >> "$GITHUB_OUTPUT"
+          echo "HOST=$HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Build zlib
+        run: |
+          wget -q https://zlib.net/${{ steps.versions.outputs.ZLIB_VERSION }}.tar.gz
+          tar -xzf ${{ steps.versions.outputs.ZLIB_VERSION }}.tar.gz
+          cd ${{ steps.versions.outputs.ZLIB_VERSION }}
+          ./configure --prefix=${{ steps.vars.outputs.PREFIX }}zlib --static
+          make -j${{ steps.cpu-cores.outputs.count }}
+          make install DESTDIR=$GITHUB_WORKSPACE/output/${{ matrix.arch }}
+
+      - name: Build OpenSSL
+        run: |
+          wget -q https://github.com/openssl/openssl/releases/download/${{ steps.versions.outputs.OPENSSL_VERSION }}/${{ steps.versions.outputs.OPENSSL_VERSION }}.tar.gz
+          tar -xzf ${{ steps.versions.outputs.OPENSSL_VERSION }}.tar.gz
+          cd ${{ steps.versions.outputs.OPENSSL_VERSION }}
+          ./Configure "linux-${{ matrix.arch == 'mipsel' && 'mips32' || matrix.arch }}" --prefix=${{ steps.vars.outputs.PREFIX }}openssl no-asm no-docs no-shared -fPIC -static
+          make -j${{ steps.cpu-cores.outputs.count }}
+          make install DESTDIR=$GITHUB_WORKSPACE/output/${{ matrix.arch }}
+
+      - name: Build OpenSSH
+        run: |
+          wget -q https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/${{ steps.versions.outputs.OPENSSH_VERSION }}.tar.gz
+          tar -xzf ${{ steps.versions.outputs.OPENSSH_VERSION }}.tar.gz
+          cd ${{ steps.versions.outputs.OPENSSH_VERSION }}
+          ./configure \
+            --host=${{ steps.vars.outputs.HOST }} \
+            --prefix=${{ steps.vars.outputs.PREFIX }}openssh \
+            --with-zlib=$GITHUB_WORKSPACE/output/${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}zlib \
+            --with-ssl-dir=$GITHUB_WORKSPACE/output/${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}openssl \
+            --disable-strip \
+            --with-privsep-user=root \
+            --sysconfdir=${{ steps.vars.outputs.PREFIX }}etc/ssh \
+            --with-privsep-path=${{ steps.vars.outputs.PREFIX }}var/empty \
+            --with-pid-dir=${{ steps.vars.outputs.PREFIX }}var/run \
+            LDFLAGS="-static" \
+            LIBS="-lpthread"
+          make -j${{ steps.cpu-cores.outputs.count }}
+          make install DESTDIR=$GITHUB_WORKSPACE/output/${{ matrix.arch }}/openssh-${{ matrix.arch }}
+
+      - name: Create tar.gz archive
+        run: |
+          cd $GITHUB_WORKSPACE/output/${{ matrix.arch }}/openssh-${{ matrix.arch }}
+          tar -czvf $GITHUB_WORKSPACE/output/openssh-${{ matrix.arch }}.tar.gz ./*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.versions.outputs.OPENSSH_VERSION }}-${{ matrix.arch }}-static
+          path: output/openssh-${{ matrix.arch }}.tar.gz
+          if-no-files-found: warn
+          compression-level: 9
+          overwrite: true # Перезаписываем артефакт
