@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
 #  push:
 #    branches:
- #     - ci
-  schedule:
-    - cron: "0 0 15 * *"
+#      - ci
+#  schedule:
+#    - cron: "0 0 15 * *"
 
 jobs:
   build:
