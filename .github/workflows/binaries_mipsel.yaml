@@ -1,4 +1,4 @@
-name: Build static lates OpenSSH
+name: Build OpenSSH mipsel
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        arch: [aarch64, mipsel]  # Объединяем архитектуры в один список.
+        arch: [mipsel]  # aarch64 Объединяем архитектуры в один список.
       fail-fast: false # продолжаем сборку даже если одна из матриц упала
 
     env:
@@ -67,55 +67,89 @@ jobs:
           fi
           echo "PREFIX=$PREFIX" >> "$GITHUB_OUTPUT"
           echo "HOST=$HOST" >> "$GITHUB_OUTPUT"
+          echo "OUTPUT=$GITHUB_WORKSPACE/output/${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
+          
+          
 
       - name: Build zlib
         run: |
           wget -q https://zlib.net/${{ steps.versions.outputs.ZLIB_VERSION }}.tar.gz
           tar -xzf ${{ steps.versions.outputs.ZLIB_VERSION }}.tar.gz
           cd ${{ steps.versions.outputs.ZLIB_VERSION }}
-          ./configure --prefix=${{ steps.vars.outputs.PREFIX }}zlib --static
+          ./configure --prefix=${{ steps.vars.outputs.PREFIX }} --static
           make -j${{ steps.cpu-cores.outputs.count }}
-          make install DESTDIR=$GITHUB_WORKSPACE/output/${{ matrix.arch }}
-
+          make install DESTDIR=${{ steps.vars.outputs.OUTPUT }}
+          # 
       - name: Build OpenSSL
         run: |
           wget -q https://github.com/openssl/openssl/releases/download/${{ steps.versions.outputs.OPENSSL_VERSION }}/${{ steps.versions.outputs.OPENSSL_VERSION }}.tar.gz
           tar -xzf ${{ steps.versions.outputs.OPENSSL_VERSION }}.tar.gz
           cd ${{ steps.versions.outputs.OPENSSL_VERSION }}
-          ./Configure "linux-${{ matrix.arch == 'mipsel' && 'mips32' || matrix.arch }}" --prefix=${{ steps.vars.outputs.PREFIX }}openssl no-asm no-docs no-shared -fPIC -static
+          ./Configure "linux-${{ matrix.arch == 'mipsel' && 'mips32' || matrix.arch }}" --prefix=${{ steps.vars.outputs.PREFIX }}/etc no-asm no-docs no-shared -fPIC -static
           make -j${{ steps.cpu-cores.outputs.count }}
-          make install DESTDIR=$GITHUB_WORKSPACE/output/${{ matrix.arch }}
+          make install DESTDIR=${{ steps.vars.outputs.OUTPUT }}
 
       - name: Build OpenSSH
         run: |
           wget -q https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/${{ steps.versions.outputs.OPENSSH_VERSION }}.tar.gz
           tar -xzf ${{ steps.versions.outputs.OPENSSH_VERSION }}.tar.gz
           cd ${{ steps.versions.outputs.OPENSSH_VERSION }}
+          #export STRIP=${{ matrix.arch }}-linux-gnu-strip
+          #             --disable-strip \
           ./configure \
             --host=${{ steps.vars.outputs.HOST }} \
-            --prefix=${{ steps.vars.outputs.PREFIX }}openssh \
-            --with-zlib=$GITHUB_WORKSPACE/output/${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}zlib \
-            --with-ssl-dir=$GITHUB_WORKSPACE/output/${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}openssl \
-            --disable-strip \
+            --prefix=${{ steps.vars.outputs.PREFIX }} \
+            --with-zlib=${{ steps.vars.outputs.OUTPUT }}${{ steps.vars.outputs.PREFIX }} \
+            --with-ssl-dir=${{ steps.vars.outputs.OUTPUT }}${{ steps.vars.outputs.PREFIX }}etc \
             --with-privsep-user=root \
             --sysconfdir=${{ steps.vars.outputs.PREFIX }}etc/ssh \
             --with-privsep-path=${{ steps.vars.outputs.PREFIX }}var/empty \
             --with-pid-dir=${{ steps.vars.outputs.PREFIX }}var/run \
+            --disable-strip \
+            --disable-legacy --enable-ssh-keygen-wrap \
             LDFLAGS="-static" \
             LIBS="-lpthread"
           make -j${{ steps.cpu-cores.outputs.count }}
-          make install DESTDIR=$GITHUB_WORKSPACE/output/${{ matrix.arch }}/openssh-${{ matrix.arch }}
+          make install DESTDIR=${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}
+
+      - name: Debug - List OpenSSH install directory
+        if: always() # Всегда запускать, даже если предыдущие шаги провалились для отладки
+        run: |
+          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/bin:"
+          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/bin/
+          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/libexec:"
+          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/libexec/
+          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/sbin:"
+          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/sbin/
+          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/etc/ssh:"
+          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/etc/ssh/
+
 
       - name: Create tar.gz archive
         run: |
-          cd $GITHUB_WORKSPACE/output/${{ matrix.arch }}/openssh-${{ matrix.arch }}
-          tar -czvf $GITHUB_WORKSPACE/output/openssh-${{ matrix.arch }}.tar.gz ./*
+          #cd ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}
+          #tar -czvf $GITHUB_WORKSPACE/output/openssh-${{ matrix.arch }}.tar.gz ./*
+          cd ${{ steps.vars.outputs.OUTPUT }}
+          ${{ env.STRIP }} -sv ./openssh-${{ matrix.arch }}/opt/bin/*
+          ${{ env.STRIP }} -sv ./openssh-${{ matrix.arch }}/opt/libexec/*
+          ${{ env.STRIP }} -sv ./openssh-${{ matrix.arch }}/opt/sbin/*
+          ${{ env.STRIP }} -sv .${{ steps.vars.outputs.PREFIX }}etc/bin/openssl
+          tar -czvf ${{ github.workspace }}/openssh-${{ matrix.arch }}.tar.gz ./*
+          mv ../../create-opkg-ipk.sh ./create-opkg-ipk.sh
+          #tree
+          ./create-opkg-ipk.sh ${{ matrix.arch }} # Передаем архитектуру как аргумент
+          cd
+          find ${{ github.workspace }}/ -type f -iname "*.ipk"
+          
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.versions.outputs.OPENSSH_VERSION }}-${{ matrix.arch }}-static
-          path: output/openssh-${{ matrix.arch }}.tar.gz
+          #path: output/openssh-${{ matrix.arch }}.tar.gz
+          path: |
+            openssh-${{ matrix.arch }}.tar.gz
+            ${{ steps.vars.outputs.OUTPUT }}/${{ steps.versions.outputs.OPENSSH_VERSION }}-${{ matrix.arch }}.ipk
           if-no-files-found: warn
           compression-level: 9
           overwrite: true # Перезаписываем артефакт
