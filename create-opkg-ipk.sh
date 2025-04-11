@@ -7,7 +7,7 @@ set -e # Выходить немедленно при ошибке
 
 # --- Настройки ---
 PACKAGE_NAME="openssh"
-PACKAGE_VERSION="9.9p2"  # Измените на вашу версию
+PACKAGE_VERSION=$(curl -s "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/" | grep -oP 'openssh-\K\d+\.\d+p\d+(?=\.tar\.gz)' | sort -V | tail -n 1)  # Измените на вашу версию
 PACKAGE_ARCHITECTURE="${1:-mipsel}" # Архитектура берется из первого аргумента, по умолчанию mipsel
 MAINTAINER_NAME="CrazyShoT"
 MAINTAINER_EMAIL="NOMAIL"

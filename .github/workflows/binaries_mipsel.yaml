@@ -3,14 +3,42 @@ name: Build OpenSSH mipsel
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 15 * *"  # Запуск 15-го числа каждого месяца.
+    - cron: "0 23 * * 5"
 
 jobs:
+  check_version:
+    runs-on: ubuntu-latest
+    outputs:
+      needs_deploy: ${{ steps.compare-versions.outputs.needs_deploy }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set env
+        run: |
+          ./check_version.sh ${{ secrets.GITHUB_TOKEN }} ${{ github.repository }} master
+        
+      - name: Compare versions
+        id: compare-versions
+        run: |
+          DEPLOY_STATUS="${{ env.DEPLOY_STATUS }}"
+          LAST_ARTIFACT_VERSION="${{ env.LAST_ARTIFACT_VERSION }}"
+          LAST_SSH_VERSION="${{ env.LAST_SSH_VERSION }}"
+          if [ "$LAST_SSH_VERSION" == "$LAST_ARTIFACT_VERSION" ]; then
+            echo "Skip job."
+            echo "needs_deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Versions differ."
+            echo "needs_deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: check_version
+    if: needs.check_version.outputs.needs_deploy == 'true'
     strategy:
       matrix:
         os: [ubuntu-latest]
-        arch: [mipsel]  # aarch64 Объединяем архитектуры в один список.
+        arch: [mipsel, aarch64]  # aarch64 Объединяем архитектуры в один список.
       fail-fast: false # продолжаем сборку даже если одна из матриц упала
 
     env:
@@ -115,14 +143,16 @@ jobs:
       - name: Debug - List OpenSSH install directory
         if: always() # Всегда запускать, даже если предыдущие шаги провалились для отладки
         run: |
-          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/bin:"
-          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/bin/
-          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/libexec:"
-          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/libexec/
-          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/sbin:"
-          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/sbin/
-          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/etc/ssh:"
-          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/etc/ssh/
+          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}bin:"
+          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}bin/
+          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}libexec:"
+          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}libexec/
+          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}sbin:"
+          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}sbin/
+          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}etc/ssh:"
+          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}etc/ssh/
+          echo "output list:"
+          ls -l ${{ steps.vars.outputs.OUTPUT }}
 
 
       - name: Create tar.gz archive
@@ -130,17 +160,18 @@ jobs:
           #cd ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}
           #tar -czvf $GITHUB_WORKSPACE/output/openssh-${{ matrix.arch }}.tar.gz ./*
           cd ${{ steps.vars.outputs.OUTPUT }}
-          ${{ env.STRIP }} -sv ./openssh-${{ matrix.arch }}/opt/bin/*
-          ${{ env.STRIP }} -sv ./openssh-${{ matrix.arch }}/opt/libexec/*
-          ${{ env.STRIP }} -sv ./openssh-${{ matrix.arch }}/opt/sbin/*
+          ${{ env.STRIP }} -sv ./openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}bin/*
+          ${{ env.STRIP }} -sv ./openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}libexec/*
+          ${{ env.STRIP }} -sv ./openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}sbin/*
           ${{ env.STRIP }} -sv .${{ steps.vars.outputs.PREFIX }}etc/bin/openssl
           tar -czvf ${{ github.workspace }}/openssh-${{ matrix.arch }}.tar.gz ./*
-          mv ../../create-opkg-ipk.sh ./create-opkg-ipk.sh
           #tree
-          ./create-opkg-ipk.sh ${{ matrix.arch }} # Передаем архитектуру как аргумент
-          cd
-          find ${{ github.workspace }}/ -type f -iname "*.ipk"
-          
+          if [[ "${{ matrix.arch }}" == "mipsel" ]]; then
+            mv ../../create-opkg-ipk.sh ./create-opkg-ipk.sh
+            ./create-opkg-ipk.sh ${{ matrix.arch }} # Передаем архитектуру как аргумент
+            cd
+            find ${{ github.workspace }}/ -type f -iname "*.ipk"
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
