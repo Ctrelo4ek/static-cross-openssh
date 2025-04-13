@@ -3,14 +3,42 @@ name: Build OpenSSH mipsel
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 15 * *"  # Запуск 15-го числа каждого месяца.
+    - cron: "0 23 * * 5"
 
 jobs:
+  check_version:
+    runs-on: ubuntu-latest
+    outputs:
+      needs_deploy: ${{ steps.compare-versions.outputs.needs_deploy }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set version
+        run: |
+          ./check_version.sh ${{ secrets.GITHUB_TOKEN }} ${{ github.repository }} master
+        
+      - name: Compare versions
+        id: compare-versions
+        run: |
+          DEPLOY_STATUS="${{ env.DEPLOY_STATUS }}"
+          LAST_ARTIFACT_VERSION="${{ env.LAST_ARTIFACT_VERSION }}"
+          LAST_SSH_VERSION="${{ env.LAST_SSH_VERSION }}"
+          if [ "$LAST_SSH_VERSION" == "$LAST_ARTIFACT_VERSION" ]; then
+            echo "Skip job."
+            echo "needs_deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Versions differ."
+            echo "needs_deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: check_version
+    if: needs.check_version.outputs.needs_deploy == 'true'
     strategy:
       matrix:
         os: [ubuntu-latest]
-        arch: [mipsel]  # aarch64 Объединяем архитектуры в один список.
+        arch: [mipsel, aarch64]  # aarch64 Объединяем архитектуры в один список.
       fail-fast: false # продолжаем сборку даже если одна из матриц упала
 
     env:
@@ -62,7 +90,7 @@ jobs:
             PREFIX="/opt/"
             HOST="mipsel-linux-gnu"
           else
-            PREFIX="/"
+            PREFIX="/xbin/"
             HOST="${{ matrix.arch }}-linux-gnu"
           fi
           echo "PREFIX=$PREFIX" >> "$GITHUB_OUTPUT"
@@ -91,14 +119,29 @@ jobs:
 
       - name: Build OpenSSH
         run: |
-          wget -q https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/${{ steps.versions.outputs.OPENSSH_VERSION }}.tar.gz
+          LISTURL="https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable https://ftp.spline.de/pub/OpenBSD/OpenSSH/portable https://mirror.yandex.ru/pub/OpenBSD/OpenSSH/portable/"
+          for URL in $LISTURL ; do
+            echo "Попытка $attempt из 5 для загрузки $URL"
+            wget -q $URL/${{ steps.versions.outputs.OPENSSH_VERSION }}.tar.gz && { echo "Файл успешно загружен."; break; }
+            echo "Ошибка. Попробую снова через 5 секунд..."
+            sleep 5
+          done
+          if [ ! -f ${{ steps.versions.outputs.OPENSSH_VERSION }}.tar.gz ]; then
+            echo "Не удалось загрузить файл."
+            exit 1
+          fi
+          
           tar -xzf ${{ steps.versions.outputs.OPENSSH_VERSION }}.tar.gz
           cd ${{ steps.versions.outputs.OPENSSH_VERSION }}
           #export STRIP=${{ matrix.arch }}-linux-gnu-strip
           #             --disable-strip \
-          ./configure \
+          if [[ "${{ matrix.arch }}" == "mipsel" ]]; then
+            ./configure \
             --host=${{ steps.vars.outputs.HOST }} \
             --prefix=${{ steps.vars.outputs.PREFIX }} \
+            --bindir=${{ steps.vars.outputs.PREFIX }}bin \
+            --sbindir=${{ steps.vars.outputs.PREFIX }}sbin \
+            --libexecdir=${{ steps.vars.outputs.PREFIX }}libexec \
             --with-zlib=${{ steps.vars.outputs.OUTPUT }}${{ steps.vars.outputs.PREFIX }} \
             --with-ssl-dir=${{ steps.vars.outputs.OUTPUT }}${{ steps.vars.outputs.PREFIX }}etc \
             --with-privsep-user=root \
@@ -109,38 +152,58 @@ jobs:
             --disable-legacy --enable-ssh-keygen-wrap \
             LDFLAGS="-static" \
             LIBS="-lpthread"
+          else
+            ./configure \
+            --host=${{ steps.vars.outputs.HOST }} \
+            --prefix=/ \
+            --bindir=/xbin \
+            --sbindir=/xbin \
+            --libexecdir=/xbin \
+            --with-zlib=${{ steps.vars.outputs.OUTPUT }}${{ steps.vars.outputs.PREFIX }} \
+            --with-ssl-dir=${{ steps.vars.outputs.OUTPUT }}${{ steps.vars.outputs.PREFIX }}etc \
+            --with-privsep-user=root \
+            --sysconfdir=/etc/ssh \
+            --with-privsep-path=/var/empty \
+            --with-pid-dir=/var/run \
+            --disable-strip \
+            --disable-legacy --enable-ssh-keygen-wrap \
+            LDFLAGS="-static" \
+            LIBS="-lpthread"
+          fi
           make -j${{ steps.cpu-cores.outputs.count }}
           make install DESTDIR=${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}
 
       - name: Debug - List OpenSSH install directory
         if: always() # Всегда запускать, даже если предыдущие шаги провалились для отладки
+        #if-no-files-found: warn
         run: |
-          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/bin:"
-          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/bin/
-          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/libexec:"
-          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/libexec/
-          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/sbin:"
-          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/sbin/
-          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/etc/ssh:"
-          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}/opt/etc/ssh/
-
+          if [[ "${{ matrix.arch }}" == "mipsel" ]]; then
+          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}bin:"
+          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}bin/
+          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}libexec:"
+          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}libexec/
+          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}sbin:"
+          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}sbin/
+          echo "Listing contents of ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}etc/ssh:"
+          ls -l ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}${{ steps.vars.outputs.PREFIX }}etc/ssh/
+          fi
+          echo "output list:"
+          ls -l ${{ steps.vars.outputs.OUTPUT }}
+          tree ${{ steps.vars.outputs.OUTPUT }}
 
       - name: Create tar.gz archive
         run: |
           #cd ${{ steps.vars.outputs.OUTPUT }}/openssh-${{ matrix.arch }}
           #tar -czvf $GITHUB_WORKSPACE/output/openssh-${{ matrix.arch }}.tar.gz ./*
           cd ${{ steps.vars.outputs.OUTPUT }}
-          ${{ env.STRIP }} -sv ./openssh-${{ matrix.arch }}/opt/bin/*
-          ${{ env.STRIP }} -sv ./openssh-${{ matrix.arch }}/opt/libexec/*
-          ${{ env.STRIP }} -sv ./openssh-${{ matrix.arch }}/opt/sbin/*
-          ${{ env.STRIP }} -sv .${{ steps.vars.outputs.PREFIX }}etc/bin/openssl
+          find ./ -type f -exec file --mime-type {} \; | grep -E ': application/x-(executable|pie-executable)' | cut -d: -f1 | xargs ${{ env.STRIP }} -sv          
           tar -czvf ${{ github.workspace }}/openssh-${{ matrix.arch }}.tar.gz ./*
-          mv ../../create-opkg-ipk.sh ./create-opkg-ipk.sh
-          #tree
-          ./create-opkg-ipk.sh ${{ matrix.arch }} # Передаем архитектуру как аргумент
-          cd
-          find ${{ github.workspace }}/ -type f -iname "*.ipk"
-          
+          if [[ "${{ matrix.arch }}" == "mipsel" ]]; then
+            mv ../../create-opkg-ipk.sh ./create-opkg-ipk.sh
+            ./create-opkg-ipk.sh ${{ matrix.arch }} # Передаем архитектуру как аргумент
+            cd
+            find ${{ github.workspace }}/ -type f -iname "*.ipk"
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

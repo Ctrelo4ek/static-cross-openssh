@@ -1,19 +1,18 @@
 #!/bin/bash
 
-# Название скрипта: build_openssh_ipk_v2.sh
 # Описание: Упрощенный скрипт для создания .ipk пакета для статического OpenSSH.
-
 set -e # Выходить немедленно при ошибке
 
 # --- Настройки ---
 PACKAGE_NAME="openssh"
-PACKAGE_VERSION="9.9p2"  # Измените на вашу версию
+PACKAGE_VERSION=$(curl -s "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/" | grep -oP 'openssh-\K\d+\.\d+p\d+(?=\.tar\.gz)' | sort -V | tail -n 1)
 PACKAGE_ARCHITECTURE="${1:-mipsel}" # Архитектура берется из первого аргумента, по умолчанию mipsel
 MAINTAINER_NAME="CrazyShoT"
 MAINTAINER_EMAIL="NOMAIL"
 
 OUTPUT_IPK_FILE="${PACKAGE_NAME}-${PACKAGE_VERSION}-${PACKAGE_ARCHITECTURE}.ipk"
 TEMP_DIR="openssh_package_temp"
+path="./openssh-${PACKAGE_ARCHITECTURE}/opt"
 
 function create-cat(){
 dest="$1"
@@ -23,42 +22,16 @@ EOF
 }
 
 # --- Основная логика скрипта ---
-
 echo "--- Сборка .ipk пакета для статического OpenSSH ---"
 
-# 1. Запрос необходимой информации от пользователя
-#read -ep "Введите архитектуру целевой системы (например, mipsel, armv7l, x86_64) [${PACKAGE_ARCHITECTURE}]: " input_arch
-#PACKAGE_ARCHITECTURE="${input_arch:-${PACKAGE_ARCHITECTURE}}" # Используем ввод пользователя или значение по умолчанию
-
-#read -ep "Введите путь к бинарнику ssh: " SSH_BINARY_PATH
-#read -ep "Введите путь к бинарнику sshd: " SSHD_BINARY_PATH
-#read -ep "Введите путь к файлу ssh_config (оставьте пустым, если не нужен): " SSH_CONFIG_PATH
-#read -ep "Введите путь к файлу sshd_config (оставьте пустым, если не нужен): " SSHD_CONFIG_PATH
-#path="./output/${PACKAGE_ARCHITECTURE}/openssh-${PACKAGE_ARCHITECTURE}/opt"
-path="./openssh-${PACKAGE_ARCHITECTURE}/opt"
-
-#SSH_BINARY_PATH="${path}/bin/ssh"
-#SCP_BINARY_PATH="${path}/scp"
-#SSHD_BINARY_PATH="/xbin/sshd"
-#SSH_CONFIG_PATH="/etc/ssh/ssh_config"
-#SSHD_CONFIG_PATH="/etc/ssh/sshd_config"
-#MODULI_CONFIG_PATH="/etc/ssh/moduli"
-
-# 2. Проверка существования файлов бинарников
-#if [ ! -f "${SSH_BINARY_PATH}" ]; then echo "Ошибка: Файл не найден: ${SSH_BINARY_PATH}"; exit 1; fi
-#if [ ! -f "${SSHD_BINARY_PATH}" ]; then echo "Ошибка: Файл не найден: ${SSHD_BINARY_PATH}"; exit 1; fi
-#if [ -n "${SSH_CONFIG_PATH}" ] && [ ! -f "${SSH_CONFIG_PATH}" ]; then echo "Ошибка: Файл не найден: ${SSH_CONFIG_PATH}"; exit 1; fi
-#if [ -n "${SSHD_CONFIG_PATH}" ] && [ ! -f "${SSHD_CONFIG_PATH}" ]; then echo "Ошибка: Файл не найден: ${SSHD_CONFIG_PATH}"; exit 1; fi
-
-# 3. Создание временных директории
+# Создание временных директории
 mkdir -p "${TEMP_DIR}"
 mkdir -p "${TEMP_DIR}/opt" "${TEMP_DIR}/etc" "${TEMP_DIR}/opt/etc/ssh" "${TEMP_DIR}/opt/sbin" "${TEMP_DIR}/opt/libexec"
 
-# 4. Создание файла control
-create-cat "${TEMP_DIR}/control" "Package: ${PACKAGE_NAME}-client-static
+# Создание файла control
+create-cat "${TEMP_DIR}/control" "Package: ${PACKAGE_NAME}
 Version: ${PACKAGE_VERSION}
-Depends:
-Alternatives: 200:/opt/bin/ssh:/opt/libexec/ssh-openssh, 200:/opt/bin/scp:/opt/libexec/scp-openssh
+Alternatives: 200:/opt/bin/ssh:/opt/libexec/ssh, 200:/opt/bin/scp:/opt/libexec/scp, 200:/opt/bin/sftp:/opt/libexec/sftp, 200:/opt/bin/sftp-server:/opt/libexec/sftp-server
 Source: feeds/packages/net/openssh
 SourceName: openssh
 License: BSD ISC
@@ -68,20 +41,27 @@ SourceDateEpoch: 1736511695
 URL: https://www.openssh.com/
 CPE-ID: cpe:/a:openssh:openssh
 Maintainer: NoName <NOMAIL>
-Architecture: mipsel
+Architecture: mipsel-3.4
 Installed-Size: 1300480
-Description:  OpenSSH client"
+Description:  OpenSSH full."
 
+# Создание файла conffiles
 create-cat "${TEMP_DIR}/conffiles" "/opt/etc/ssh/ssh_config"
+
+# Создание файла postinst
 create-cat "${TEMP_DIR}/postinst" '#!/bin/sh
 [ "${IPKG_NO_SCRIPT}" = "1" ] && exit 0
 [ -s ${IPKG_INSTROOT}/lib/functions.sh ] || exit 0
 . ${IPKG_INSTROOT}/lib/functions.sh
 default_postinst $0 $@'
+
+# Создание файла prerm
 create-cat "${TEMP_DIR}/prerm" "#!/bin/sh
 [ -s ${IPKG_INSTROOT}/lib/functions.sh ] || exit 0
 . ${IPKG_INSTROOT}/lib/functions.sh
 default_prerm $0 $@"
+
+# Создание файла debian-binary
 create-cat "${TEMP_DIR}/debian-binary" "2.0"
 
 #tree
@@ -98,6 +78,7 @@ cp -v ${path}/etc/ssh/* ${TEMP_DIR}/opt/etc/ssh/
 # 6. Создание архивов и debian-binary
 pushd "${TEMP_DIR}" #> /dev/null
   tar -czf control.tar.gz ./control ./conffiles ./postinst ./prerm
+  #tar -czf control.tar.gz ./control ./conffiles
   tar -czf data.tar.gz ./opt
   tar -czf "../${OUTPUT_IPK_FILE}" ./debian-binary ./control.tar.gz ./data.tar.gz
 popd #> /dev/null
