@@ -14,14 +14,15 @@ function githubenv_set() {
 }
 
 function del_skip_deploy(){
+#DEPLOY_STATUS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+#    "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$LAST_RUN/jobs" | jq -r '.jobs[] | select(.name == "build (ubuntu-latest, mipsel)") | .conclusion')
 DEPLOY_STATUS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-    "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$LAST_RUN/jobs" | jq -r '.jobs[] | select(.name == "build (ubuntu-latest, mipsel)") | .conclusion')
-# Проверяем статус job с именем 'deploy'
-if [ "$DEPLOY_STATUS" == "success" ]; then
-    echo "Job '$JOBNAME' completed successfully."
-elif [ -z "$DEPLOY_STATUS" ]; then
-    echo "Build..."  
-else
+    "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$LAST_RUN/jobs" | jq -r '.jobs[] | select(.name == "build") | .conclusion')
+#if [ "$DEPLOY_STATUS" == "success" ]; then
+#    echo "Job '$JOBNAME' completed successfully."
+if [ -z "$DEPLOY_STATUS" ]; then
+    echo "Skip..."
+elif [ "$DEPLOY_STATUS" == "skipped" ]; then
     echo "Job '$JOBNAME' did not succeed or has not completed yet."
     curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
          "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$LAST_RUN"

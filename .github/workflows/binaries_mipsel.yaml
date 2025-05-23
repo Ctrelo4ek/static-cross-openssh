@@ -132,7 +132,8 @@ jobs:
           fi
           
           tar -xzf ${{ steps.versions.outputs.OPENSSH_VERSION }}.tar.gz
-          cd ${{ steps.versions.outputs.OPENSSH_VERSION }}
+          cd $(find ./ -type d -iname 'openssh*' | head -n1)
+          #cd ${{ steps.versions.outputs.OPENSSH_VERSION }}
           #export STRIP=${{ matrix.arch }}-linux-gnu-strip
           #             --disable-strip \
           if [[ "${{ matrix.arch }}" == "mipsel" ]]; then
