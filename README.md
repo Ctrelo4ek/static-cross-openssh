@@ -1,4 +1,4 @@
-# static-cross-openssh: statically cross-compile ssh
+#  static-cross-openssh: statically cross-compile ssh
 
 [![Get the binaries](https://img.shields.io/badge/Get%20the%20binaries-8a2be2)](https://github.com/binary-manu/static-cross-openssh/actions/workflows/binaries.yaml?query=branch%3Amaster+is%3Asuccess)
 _Click here to grab prebuilt binaries from GitHub artifacts_
