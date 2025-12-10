@@ -3,10 +3,16 @@ define openssh/determine_latest
   $(eval override openssh/VERSION := $(call shell_checked,
     . ./version.sh;
 	list_github_tags https://github.com/openssh/openssh-portable |
+	sed -En 's/^V_.*$$/&/p' |
 	sort_versions | tail -n 1
   ))
 endef
 $(call determine_version,openssh,$(openssh/DEFAULT_VERSION))
+
+openssh/major_version := $(call shell_checked,printf %s '$(openssh/VERSION)' | sed -E 's/^V_([[:digit:]]+).*$$/\1/')
+ifeq "$(openssh/major_version)" ""
+  $(error Unable to parse major from OpenSSH version)
+endif
 
 openssh/TARBALL := https://github.com/openssh/openssh-portable/archive/refs/tags/$(openssh/VERSION).tar.gz
 openssh/DEPENDS := zlib openssl
@@ -21,6 +27,11 @@ openssh/binfiles := \
 openssh/conffiles := etc/sshd_config
 openssh/emptydir := var/empty
 
+# Extra files added in specific versions
+ifeq "$(call greater_equal,$(openssh/major_version),10)" "1"
+  openssh/binfiles += \
+    $(addprefix libexec/,sshd-auth)
+endif
 
 ifeq "$(call shrink_level_at_least,$(SHRINK_LEVEL_RUNTIME))" "1"
   openssh/upx := upx --best --lzma -q
@@ -47,6 +58,9 @@ endef
 define openssh/package =
 	cd '$(staging_dir)/$(prefix)'
 	echo $(openssh/binfiles) | xargs -n1 $(host_triplet)-strip -sv
+
+	# Check that the executable is actually available
+	command -v $(firstword $(openssh/upx))
 
 	# Try compressing with UPX if enabled and available
 	# UPX bails out on SUID files, so remove the bit before and restore it after
